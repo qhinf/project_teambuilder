@@ -18,7 +18,6 @@ type Preferences =
 
 let maxTeamSize = 6
 let minTeamSize = 3
-let idealTeamSize = 5
 
 let studentPreferences =
     [ Student "1", { Roles = [ ScrumMaster; Developer ]; Projects = [ Project "1"; Project "2" ]}
@@ -46,7 +45,7 @@ let studentHasRoleInProject =
                     Boolean
     } |> SMap3.ofSeq
 
-let happiness =
+let totalHappiness =
     [ for student in students ->    
         let topPreferredRole = studentPreferences[student].Roles |> List.head
         let happyWithRole = sum studentHasRoleInProject[student, topPreferredRole, All]
@@ -55,7 +54,7 @@ let happiness =
         happyWithRole + happyWithProject ]
     |> List.sum
 
-let objective = Objective.create "MaximizeHappiness" Maximize happiness
+let objective = Objective.create "MaximizeHappiness" Maximize totalHappiness
 
 let constraints = seq {
     yield! ConstraintBuilder "StudentHasOneRoleInOneProject" {
@@ -65,7 +64,7 @@ let constraints = seq {
 
     // We allow projects to be picked by 0 or more teams, but each team needs
     // one scrum master and one product owner, so a project needs an equal
-    // amount of scrum master and product owners
+    // amount of scrum masters and product owners
     yield! ConstraintBuilder "ProjectHasAsManyScrumMastersAsProductOwners" {
         for project in shortlist ->
             sum studentHasRoleInProject[All, ScrumMaster, project] == sum studentHasRoleInProject[All, ProductOwner, project]
@@ -111,17 +110,25 @@ let settings = {
 
 let result = Solver.solve settings model
 
-printfn "-- Result --"
-
-// Match the result of the call to solve
-// If the model could not be solved it will return a `Suboptimal` case with a message as to why
-// If the model could be solved, it will print the value of the Objective Function and the
-// values for the Decision Variables
 match result with
 | Optimal solution ->
     printfn "Total happiness: %f" (Objective.evaluate solution objective)
 
-    for (decision, value) in solution.DecisionResults |> Map.toSeq do
-        let (DecisionName name) = decision.Name
-        printfn "Decision: %s\tValue: %f" name value
+    let studentRoleProject =
+        seq {
+            for student in students do
+                for role in Role.Values do
+                    for project in shortlist do
+                        if
+                            studentHasRoleInProject[student, role, project]
+                            |> LinearExpression.OfDecision
+                            |> Solution.evaluate solution
+                            = 1.0
+                        then
+                            yield (student, role, project)
+        }
+
+    for (student, role, project) in studentRoleProject do
+        printfn $"{student} is {role} in {project}"
+    
 | _ -> printfn $"Unable to solve. Error: %A{result}"
