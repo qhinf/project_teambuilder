@@ -54,7 +54,16 @@ let totalHappiness =
         happyWithRole + happyWithProject ]
     |> List.sum
 
-let objective = Objective.create "MaximizeHappiness" Maximize totalHappiness
+let unhappyStudents =
+    [ for student in students ->    
+        let leastPreferredRole = studentPreferences[student].Roles |> List.last
+        let leastPrefferedProject = studentPreferences[student].Projects |> List.last
+        studentHasRoleInProject[student, leastPreferredRole, leastPrefferedProject]
+        |> LinearExpression.OfDecision ]
+    |> List.sum
+
+let maximizeTotalHappiness = Objective.create "MaximizeTotHappiness" Maximize totalHappiness
+let minimizeUnhappyStudents = Objective.create "MinimizeUnhappyStudents" Minimize unhappyStudents
 
 let constraints = seq {
     yield! ConstraintBuilder "StudentHasOneRoleInOneProject" {
@@ -98,7 +107,8 @@ let constraints = seq {
 }
 
 let model =
-    Model.create objective
+    Model.create maximizeTotalHappiness
+    |> Model.addObjective minimizeUnhappyStudents
     |> Model.addConstraints constraints
 
 let settings = {
@@ -112,23 +122,24 @@ let result = Solver.solve settings model
 
 match result with
 | Optimal solution ->
-    printfn "Total happiness: %f" (Objective.evaluate solution objective)
+    printfn "Total happiness: %f" (Objective.evaluate solution maximizeTotalHappiness)
+    printfn "Unhappy students: %f" (Objective.evaluate solution minimizeUnhappyStudents)
 
-    let studentRoleProject =
+    let projectRoleStudent =
         seq {
             for student in students do
-                for role in Role.Values do
-                    for project in shortlist do
+                for project in shortlist do
+                    for role in Role.Values do
                         if
                             studentHasRoleInProject[student, role, project]
                             |> LinearExpression.OfDecision
                             |> Solution.evaluate solution
                             = 1.0
                         then
-                            yield (student, role, project)
+                            yield (project, role, student)
         }
 
-    for (student, role, project) in studentRoleProject do
-        printfn $"{student} is {role} in {project}"
+    for (project, role, student) in projectRoleStudent |> Seq.sort do
+        printfn $"{project} {role}: {student}"
     
 | _ -> printfn $"Unable to solve. Error: %A{result}"
