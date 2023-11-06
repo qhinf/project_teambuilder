@@ -1,93 +1,82 @@
-﻿open Flips
+﻿open Argu
+open Flips
 open Flips.Types
 open Flips.SliceMap
 
 type Student = Student of string
+    with member this.Name = match this with Student name -> name
 type Role = ScrumMaster | ProductOwner | Developer
     with static member Values = [ ScrumMaster; ProductOwner; Developer ]
 type Project = Project of string
-type Assignment = Assignment of Role * Project
-
-type Result =
-    | Solved of totalNthPreference: float * Map<Student, Assignment>
-    | Infeasible of string
-    | Unbounded of string
-    | Unknown of string
-
-let maxTeamSize = 6
-let minTeamSize = 3
-
-let solverSettings = {
-    SolverType = SolverType.CBC
-    MaxDuration = 10_000L
-    WriteLPFile = None
-    WriteMPSFile = None
-}
+    with member this.Name = match this with Project name -> name
 
 // Students get to state their preference for a combined role and project, for
 // example if they want to be a product owner for one project, but just a
 // developer for another
-let studentPreferences =
-    [ Student "1", [ Assignment (ScrumMaster, Project "1"); Assignment (ProductOwner, Project "2") ]
-      Student "2", [ Assignment (ProductOwner, Project "1"); Assignment (Developer, Project "2") ]
-      Student "3", [ Assignment (ScrumMaster, Project "2"); Assignment (ScrumMaster, Project "1") ] ]
-    |> Map.ofList
+type Assignment = Assignment of Role * Project
+    with member this.Role = match this with Assignment (role, _) -> role
+         member this.Project = match this with Assignment (_, project) -> project
+type Preferences = Map<Student, Assignment list>
 
-let projects = 
-    studentPreferences 
-    |> Map.values 
-    |> Seq.collect (List.map (fun (Assignment (_, project)) -> project))
-    |> Seq.distinct
-    |> Seq.toList
+module TeamBuilder =
+    type Settings =
+        { MinTeamSize: int
+          MaxTeamSize: int
+          MinimizeTeamCount: bool
+          SolverSettings: SolverSettings }
 
-let assignments =
-    List.allPairs Role.Values projects 
-    |> List.map Assignment
+        static member Default =
+            { MinTeamSize = 3
+              MaxTeamSize = 6
+              MinimizeTeamCount = false
+              SolverSettings = Settings.basic }
 
-let students =
-    studentPreferences
-    |> Map.keys
-    |> Seq.toList
+    let private getProjects (preferences: Preferences) = 
+        preferences 
+        |> Map.values 
+        |> Seq.collect (List.map (fun (Assignment (_, project)) -> project))
+        |> Seq.distinct
+        |> Seq.toList
 
-// To give ourselves more alternatives beyond what the student submitted, we
-// create a cartesian product of the roles and projects listed by the student.
-// Ideally, a valid assignment could be found before these are needed, but if we
-// do get this deep into their preferences, the student is at least constrained
-// to the roles and projects they have indicated an interest in, albeit not in
-// the combinations they specified
-let extendPreferences preferenceMap =
-    preferenceMap |> Map.map (fun _ preferences ->
-        let roles = preferences |> List.map (fun (Assignment (role, _)) -> role)
-        let projects = preferences |> List.map (fun (Assignment (_, project)) -> project)
-        let extension =
-            List.allPairs roles projects
-            |> List.map Assignment
-            |> List.filter (fun pref -> not <| List.contains pref preferences)
-        preferences @ extension
-    )
+    let private getAllAssignments projects =
+        List.allPairs Role.Values projects 
+        |> List.map Assignment
 
-let extendedPreferences = extendPreferences studentPreferences
+    let private getStudents (preferences: Preferences) =
+        preferences
+        |> Map.keys
+        |> Seq.toList
 
-let roleIs role = Where (fun (Assignment (r, _)) -> r = role)
-let roleIn roleSet = Where (fun (Assignment (r, _)) -> Set.contains r roleSet)
-let projectIs project = Where (fun (Assignment (_, p)) -> p = project)
-let projectIn projectSet = Where (fun (Assignment (_, p)) -> Set.contains p projectSet)
+    // To give ourselves more alternatives beyond what the student submitted, we
+    // create a cartesian product of the roles and projects listed by the
+    // student. Ideally, a valid assignment could be found before these are
+    // needed, but if we do get this deep into their preferences, the student is
+    // at least constrained to the roles and projects they have indicated an
+    // interest in, albeit not in the combinations they specified
+    let private extendPreferences (preferences: Preferences) =
+        preferences |> Map.map (fun _ preferences ->
+            let roles = preferences |> List.map (fun (Assignment (role, _)) -> role)
+            let projects = preferences |> List.map (fun (Assignment (_, project)) -> project)
+            let extension =
+                List.allPairs roles projects
+                |> List.map Assignment
+                |> List.filter (fun pref -> not <| List.contains pref preferences)
+            preferences @ extension
+        )
 
-let findSolution (studentPreferences: Map<Student, Assignment list>) =
-    // Recursively try to find a solution where each student is assigned a role
-    // and project, within the given constraints. Each iteration, we add one
-    // more alternative of the given preferences, until we can find a solution.
-    // This means that if there is a solution possible with everyone's top 2,
-    // this is preferred to a solution where a single student gets their fourth
-    // preferred option and all others their first.
-    let rec findSolution maxNthPreference (studentPreferences: Map<Student, Assignment list>) =
+    let inline private roleIs role = Where (fun (Assignment (r, _)) -> r = role)
+    let inline private roleIn roleSet = Where (fun (Assignment (r, _)) -> Set.contains r roleSet)
+    let inline private projectIs project = Where (fun (Assignment (_, p)) -> p = project)
+    let inline private projectIn projectSet = Where (fun (Assignment (_, p)) -> Set.contains p projectSet)
+
+    let rec private buildTeams' maxNthPreference (settings: Settings) (preferences: Map<Student, Assignment list>) (students: Student list) (projects: Project list) (allAssignments: Assignment list) =
         // The decision is to map each student to one assignment (role and
         // project), so there is a boolean decision for each combination of
         // student and role+project
         let studentAssignment =
             DecisionBuilder "StudentAssignment" {
                 for student in students do
-                    for assignment in assignments ->
+                    for assignment in allAssignments ->
                             Boolean
             } |> SMap2.ofSeq
         
@@ -117,14 +106,14 @@ let findSolution (studentPreferences: Map<Student, Assignment list>) =
                     // Count the number of scrum masters in this project as a proxy for
                     // the number of teams in this project
                     let teamsForProject = sum studentAssignment[All, Assignment (ScrumMaster, project)]
-                    sum studentAssignment[All, projectIs project] >== float minTeamSize * teamsForProject
+                    sum studentAssignment[All, projectIs project] >== float settings.MinTeamSize * teamsForProject
             }
 
             // Teams have a maximum size, similar to the minimum size
             yield! ConstraintBuilder "MaximumTeamSize" {
                 for project in projects ->
                     let teamsForProject = sum studentAssignment[All, Assignment (ScrumMaster, project)]
-                    sum (studentAssignment[All, projectIs project]) <== float maxTeamSize * teamsForProject
+                    sum (studentAssignment[All, projectIs project]) <== float settings.MaxTeamSize * teamsForProject
             }
 
             // Each student should get an assignment that is within in their top
@@ -136,9 +125,9 @@ let findSolution (studentPreferences: Map<Student, Assignment list>) =
                 // students only giving a single option and thus guaranteeing
                 // themselves that position, which can lead to conflicts if two
                 // students choose the same.)
-                if List.length studentPreferences[student] >= maxNthPreference + 1 then
+                if List.length preferences[student] >= maxNthPreference + 1 then
                     // If there are enough preferences, take the top n for this iteration
-                    let topNPreferences = studentPreferences[student] |> List.take (maxNthPreference + 1) |> Set.ofList
+                    let topNPreferences = preferences[student] |> List.take (maxNthPreference + 1) |> Set.ofList
                     yield Constraint.create $"WithinPreferences_%A{student}" 
                         (sum studentAssignment[student, In topNPreferences] >== 1.)
         }
@@ -147,13 +136,13 @@ let findSolution (studentPreferences: Map<Student, Assignment list>) =
         // we optimize for the minimal total index of the chosen preferences.
         let totalNthPreference =
             [ for student in students do
-                let maxN = min maxNthPreference (List.length studentPreferences[student] - 1)
+                let maxN = min maxNthPreference (List.length preferences[student] - 1)
                 // For each of a students preferences, multiply that index by
                 // the decision if they get that assignment. This results in the
                 // index of their chosen preferred assignment, as all other
                 // assignments are decided as 0
                 for n = 0 to maxN do
-                    yield studentAssignment[student, studentPreferences[student][n]] * float n
+                    yield studentAssignment[student, preferences[student][n]] * float n
                 // If we needed more alternatives than the student has given, we
                 // also go through all other possible assignments (since we
                 // discarded the constraints for this student) and mark the one
@@ -161,53 +150,136 @@ let findSolution (studentPreferences: Map<Student, Assignment list>) =
                 // preference list
                 if maxN < maxNthPreference then
                     let nonPreferredAssignments =
-                        assignments |> List.filter (fun ass -> not <| List.contains ass studentPreferences[student])
+                        allAssignments |> List.filter (fun ass -> not <| List.contains ass preferences[student])
                     for assignment in nonPreferredAssignments do
                         yield studentAssignment[student, assignment] * float (maxN + 1) ]
             |> List.sum
 
         let minimizeTotalNthPreference = Objective.create "MinimizeTotalNthPreference" Minimize totalNthPreference
 
+        let numberOfTeams = sum studentAssignment[All, roleIs ScrumMaster]
+        let minimizeNumberOfTeams = Objective.create "MinimizeNumberOfTeams" Minimize numberOfTeams
+
         let model =
             Model.create minimizeTotalNthPreference
+            |> if settings.MinimizeTeamCount
+               then Model.addObjective minimizeNumberOfTeams
+               else id
             |> Model.addConstraints constraints
 
-        let result = Solver.solve solverSettings model
+        let result = Solver.solve settings.SolverSettings model
 
         match result with
         | Optimal solution ->
-            let totalNthPreference = Objective.evaluate solution minimizeTotalNthPreference
-            let assignments =
-                [ for student in students do
-                    for assignment in assignments do
-                        if 
-                            studentAssignment[student, assignment]
+            Ok [ for student in students do
+                    for assignment in allAssignments do
+                        if studentAssignment[student, assignment]
                             |> LinearExpression.OfDecision
                             |> Solution.evaluate solution
                             = 1.
-                        then yield (student, assignment) ]
+                        then yield (assignment, student) ]
+        | Infeasible _ when maxNthPreference < 10 -> 
+            buildTeams' (maxNthPreference + 1) settings preferences students projects allAssignments
+        | Infeasible message -> 
+            Error $"No feasable solution found within all students' top 10 preferences. Maybe some constraints are too strict. Solver message: {message}"
+        | Unbounded message -> 
+            Error $"The model is unbounded. This should not happen. Solver message: {message}"
+        | Unknown message -> 
+            Error $"An unknown error occurred. Solver message: {message}"
+
+    let buildTeams (settings: Settings) (preferences: Preferences) =
+        // Recursively try to find a solution where each student is assigned a role
+        // and project, within the given constraints. Each iteration, we add one
+        // more alternative of the given preferences, until we can find a solution.
+        // This means that if there is a solution possible with everyone's top 2,
+        // this is preferred to a solution where a single student gets their fourth
+        // preferred option and all others their first.
+        let students = getStudents preferences
+        let projects = getProjects preferences
+        let allAssignments = getAllAssignments projects
+        buildTeams' 0 settings preferences students projects allAssignments
+
+type Args =
+    | [<MainCommand; ExactlyOnce>] Preferences of path: string
+    | Name_Column of int
+    | Pref_Start_Column of int
+    | Min_Team_Size of int
+    | Max_Team_Size of int
+    | Minimize_Team_Count
+    | Solve_Timeout of int64
+
+    interface IArgParserTemplate with
+        member this.Usage =
+            match this with
+            | Preferences _ -> "Path to an Excel file containing student preferences"
+            | Name_Column _ -> "Index of the column in the Excel file where the student's name is recorded"
+            | Pref_Start_Column _ -> "Index of the column in the Excel file where the columns containing preferences start"
+            | Min_Team_Size _ -> "Minimum size of a team"
+            | Max_Team_Size _ -> "Maximum size of a team"
+            | Minimize_Team_Count -> "Minimize the number of teams (after optimizing students' preferences)"
+            | Solve_Timeout _ -> "Maximum duration for running the solver in each round (in ms)"
+
+[<EntryPoint>]
+let main args =
+    let argParser = ArgumentParser.Create<Args>()
+    try 
+        let args = argParser.ParseCommandLine(inputs = args, raiseOnUsage = true)
+
+        // TODO: Read data
+        let preferences =
+            [ Student "1", [ Assignment (ScrumMaster, Project "1"); Assignment (ProductOwner, Project "2") ]
+              Student "2", [ Assignment (ProductOwner, Project "1"); Assignment (Developer, Project "2") ]
+              Student "3", [ Assignment (ScrumMaster, Project "2"); Assignment (ScrumMaster, Project "1") ] ]
+            |> Map.ofList
+
+        let settings =
+            TeamBuilder.Settings.Default
+            |> match args.TryGetResult <@ Min_Team_Size @> with
+               | Some minTeamSize -> fun settings -> { settings with MinTeamSize = minTeamSize }
+               | None -> id
+            |> match args.TryGetResult <@ Max_Team_Size @> with
+               | Some maxTeamSize -> fun settings -> { settings with MaxTeamSize = maxTeamSize }
+               | None -> id
+            |> if args.Contains <@ Minimize_Team_Count @>
+               then fun settings -> { settings with MinimizeTeamCount = true }
+               else id
+            |> match args.TryGetResult <@ Solve_Timeout @> with
+               | Some solveTimeout -> fun settings -> { settings with SolverSettings = { settings.SolverSettings with MaxDuration = solveTimeout } }
+               | None -> id
+
+        match TeamBuilder.buildTeams settings preferences with
+        | Ok result ->
+            let nthPreferences =
+                [ for assignment, student in result do
+                    let nthPref = 
+                        preferences[student] 
+                        |> List.tryFindIndex (fun a -> a = assignment)
+                        |> Option.defaultWith (fun () -> List.length preferences[student])
+                    student, nthPref + 1 ]
                 |> Map.ofList
-            Solved (totalNthPreference, assignments)
-        | SolveResult.Infeasible _ when maxNthPreference < 10 -> 
-            printfn $"Infeasible for maxNthPreference={maxNthPreference}, trying with +1"
-            findSolution (maxNthPreference + 1) studentPreferences
-        | SolveResult.Infeasible message -> 
-            Infeasible message
-        | SolveResult.Unbounded message -> 
-            Unbounded message
-        | SolveResult.Unknown message -> 
-            Unknown message
-    
-    findSolution 0 studentPreferences
 
-match findSolution extendedPreferences with
-| Solved (totalNthPreference, assignments) ->
-    printfn "Total nth preference: %f" totalNthPreference
-    printfn "Average nth preference: %f" (totalNthPreference / float (List.length students))
+            let avgNthPreference = 
+                nthPreferences |> Map.values |> Seq.map float |> Seq.average
+            let highestPreference =
+                nthPreferences |> Map.values |> Seq.max
 
-    Map.toSeq assignments
-    |> Seq.map (fun (student, Assignment (role, project)) -> project, role, student)
-    |> Seq.sort
-    |> Seq.iter (fun (project, role, student) -> printfn $"{project} {role}: {student}")
-    
-| result -> printfn $"Unable to solve. Error: %A{result}"
+            printfn $"Average preference: %.2f{avgNthPreference}"
+            printfn $"Highest preference: %d{highestPreference}"
+
+            result 
+            |> List.groupBy (fun (assignment, _) -> assignment.Project)
+            |> List.iter (fun (project, assignments) ->
+                printfn ""
+                printfn $"- %s{project.Name}"
+                for assignment, student in assignments |> List.sort do
+                    let nthPref = nthPreferences[student]
+                    printfn $"  - %A{assignment.Role}: %s{student.Name} (Pref: %d{nthPref})"
+            ) 
+
+            0
+        | Error message ->
+            printfn "%s" message
+            1
+    with e ->
+        printfn "%s" e.Message
+        1
