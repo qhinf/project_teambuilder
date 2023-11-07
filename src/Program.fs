@@ -1,12 +1,22 @@
-﻿open Argu
+﻿open System
+open System.IO
+open System.Text
+open Argu
+open ExcelDataReader
 open Flips
-open Flips.Types
 open Flips.SliceMap
+open Flips.Types
 
 type Student = Student of string
     with member this.Name = match this with Student name -> name
 type Role = ScrumMaster | ProductOwner | Developer
     with static member Values = [ ScrumMaster; ProductOwner; Developer ]
+         static member TryParse (str: string) =
+            match str.ToLowerInvariant() with
+            | "scrum master" | "scrummaster" | "sm" -> Some ScrumMaster
+            | "product owner" | "productowner" | "po" -> Some ProductOwner
+            | "developer" | "dev" -> Some Developer
+            | _ -> None
 type Project = Project of string
     with member this.Name = match this with Project name -> name
 
@@ -65,9 +75,7 @@ module TeamBuilder =
         )
 
     let inline private roleIs role = Where (fun (Assignment (r, _)) -> r = role)
-    let inline private roleIn roleSet = Where (fun (Assignment (r, _)) -> Set.contains r roleSet)
     let inline private projectIs project = Where (fun (Assignment (_, p)) -> p = project)
-    let inline private projectIn projectSet = Where (fun (Assignment (_, p)) -> Set.contains p projectSet)
 
     let rec private buildTeams' maxNthPreference (settings: Settings) (preferences: Map<Student, Assignment list>) (students: Student list) (projects: Project list) (allAssignments: Assignment list) =
         // The decision is to map each student to one assignment (role and
@@ -200,7 +208,8 @@ module TeamBuilder =
         buildTeams' 0 settings preferences students projects allAssignments
 
 type Args =
-    | [<MainCommand; ExactlyOnce>] Preferences of path: string
+    | [<MainCommand; ExactlyOnce>] Preferences_File of path: string
+    | No_Header
     | Name_Column of int
     | Pref_Start_Column of int
     | Min_Team_Size of int
@@ -211,7 +220,8 @@ type Args =
     interface IArgParserTemplate with
         member this.Usage =
             match this with
-            | Preferences _ -> "Path to an Excel file containing student preferences"
+            | Preferences_File _ -> "Path to an Excel file containing student preferences"
+            | No_Header -> "Indicate that the Excel file doet not contain a header row"
             | Name_Column _ -> "Index of the column in the Excel file where the student's name is recorded"
             | Pref_Start_Column _ -> "Index of the column in the Excel file where the columns containing preferences start"
             | Min_Team_Size _ -> "Minimum size of a team"
@@ -221,15 +231,55 @@ type Args =
 
 [<EntryPoint>]
 let main args =
-    let argParser = ArgumentParser.Create<Args>()
-    try 
-        let args = argParser.ParseCommandLine(inputs = args, raiseOnUsage = true)
+    let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
+    let argParser = ArgumentParser.Create<Args>(errorHandler = errorHandler)
+    let args = argParser.ParseCommandLine(inputs = args, raiseOnUsage = true)
 
-        // TODO: Read data
-        let preferences =
-            [ Student "1", [ Assignment (ScrumMaster, Project "1"); Assignment (ProductOwner, Project "2") ]
-              Student "2", [ Assignment (ProductOwner, Project "1"); Assignment (Developer, Project "2") ]
-              Student "3", [ Assignment (ScrumMaster, Project "2"); Assignment (ScrumMaster, Project "1") ] ]
+    try
+        let filePath = args.GetResult <@ Preferences_File @>
+        let noHeader = args.Contains <@ No_Header @>
+        let nameColumn = args.TryGetResult <@ Name_Column @> |> Option.defaultValue 4
+        let prefStartColumn = args.TryGetResult <@ Pref_Start_Column @> |> Option.defaultValue 5
+
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)
+        use file = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+        use fileReader = 
+            if filePath.EndsWith ".csv"
+            then ExcelReaderFactory.CreateCsvReader(file)
+            else ExcelReaderFactory.CreateReader(file)
+
+        let fileDataSet = fileReader.AsDataSet(
+            ExcelDataSetConfiguration
+                ( FilterSheet = (fun tableReader sheetIndex -> sheetIndex = 0),
+                  ConfigureDataTable = fun tableReader -> 
+                    ExcelDataTableConfiguration
+                        ( UseHeaderRow = not noHeader ) ) 
+        )
+
+        let preferences = 
+            [ for row in fileDataSet.Tables[0].Rows do
+                let items = row.ItemArray
+                let student = Student (items[nameColumn] :?> string)
+                let preferences = 
+                    items[prefStartColumn..]
+                    |> Array.choose (function
+                        | :? String as str when not (String.IsNullOrWhiteSpace str) -> 
+                            Some str
+                        | _ -> 
+                            None
+                    )
+                    |> Array.chunkBySize 2
+                    |> Array.map (function 
+                        | [| role; project |] -> 
+                            match Role.TryParse role with
+                            | Some role -> Assignment (role, Project project)
+                            | None -> raise (InvalidDataException $"\"{role}\" is not a valid role")
+                        | _ ->
+                            raise (InvalidDataException $"Uneven amount of preference columns found. Please check that the correct starting column is set and that the data is complete.")
+                    )
+                    |> Array.distinct
+                    |> Array.toList
+                student, preferences ]
             |> Map.ofList
 
         let settings =
@@ -260,11 +310,11 @@ let main args =
 
             let avgNthPreference = 
                 nthPreferences |> Map.values |> Seq.map float |> Seq.average
-            let highestPreference =
+            let worstPreference =
                 nthPreferences |> Map.values |> Seq.max
 
             printfn $"Average preference: %.2f{avgNthPreference}"
-            printfn $"Highest preference: %d{highestPreference}"
+            printfn $"Worst preference: %d{worstPreference}"
 
             result 
             |> List.groupBy (fun (assignment, _) -> assignment.Project)
