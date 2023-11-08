@@ -7,25 +7,36 @@ open Flips.SliceMap
 open Flips.Types
 open FSharp.SystemCommandLine
 
-type Student = Student of string
-    with member this.Name = match this with Student name -> name
-type Role = ScrumMaster | ProductOwner | Developer
-    with static member Values = [ ScrumMaster; ProductOwner; Developer ]
-         static member TryParse (str: string) =
-            match str.ToLowerInvariant() with
-            | "scrum master" | "scrummaster" | "sm" -> Some ScrumMaster
-            | "product owner" | "productowner" | "po" -> Some ProductOwner
-            | "developer" | "dev" -> Some Developer
-            | _ -> None
-type Project = Project of string
-    with member this.Name = match this with Project name -> name
+type Student = Student of string with
+    member this.Name = match this with Student name -> name
+    override this.ToString() = $"Student %s{this.Name}"
+
+type Role = ScrumMaster | ProductOwner | Developer with
+    override this.ToString() = 
+        match this with 
+        | ScrumMaster -> "Scrum master" 
+        | ProductOwner -> "Product owner" 
+        | Developer -> "Developer"
+    static member Values = [ ScrumMaster; ProductOwner; Developer ]
+    static member TryParse (str: string) =
+        match str.ToLowerInvariant() with
+        | "scrum master" | "scrummaster" | "sm" -> Some ScrumMaster
+        | "product owner" | "productowner" | "po" -> Some ProductOwner
+        | "developer" | "dev" -> Some Developer
+        | _ -> None
+
+type Project = Project of string with
+    member this.Name = match this with Project name -> name
+    override this.ToString() = $"Project %s{this.Name}"
+
+type Assignment = Assignment of Role * Project with
+    member this.Role = match this with Assignment (role, _) -> role
+    member this.Project = match this with Assignment (_, project) -> project
+    override this.ToString() = $"%O{this.Role} in %O{this.Project}"
 
 // Students get to state their preference for a combined role and project, for
 // example if they want to be a product owner for one project, but just a
 // developer for another
-type Assignment = Assignment of Role * Project
-    with member this.Role = match this with Assignment (role, _) -> role
-         member this.Project = match this with Assignment (_, project) -> project
 type Preferences = Map<Student, Assignment list>
 
 module TeamBuilder =
@@ -130,7 +141,7 @@ module TeamBuilder =
                 if List.length preferences[student] >= maxNthPreference + 1 then
                     // If there are enough preferences, take the top n for this iteration
                     let topNPreferences = preferences[student] |> List.take (maxNthPreference + 1) |> Set.ofList
-                    yield Constraint.create $"WithinPreferences_%A{student}" 
+                    yield Constraint.create $"WithinPreferences_%O{student}" 
                         (sum studentAssignment[student, In topNPreferences] >== 1.)
         }
 
@@ -318,7 +329,7 @@ let run (ctx: CommandLine.Invocation.InvocationContext) =
                 printfn $"- %s{project.Name}"
                 for assignment, student in assignments |> List.sort do
                     let nthPref = nthPreferences[student]
-                    printfn $"  - %A{assignment.Role}: %s{student.Name} (Pref: %d{nthPref})"
+                    printfn $"  - %O{assignment.Role}: %s{student.Name} (Pref: %d{nthPref})"
             ) 
 
             0
