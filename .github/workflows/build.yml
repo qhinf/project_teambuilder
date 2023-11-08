@@ -1,0 +1,32 @@
+name: Build
+
+on:
+    push:
+
+jobs:
+    build:
+        strategy:
+            matrix:
+                rid: [ "win-x64", "linux-x64", "osx-x64", "osx-arm64" ]
+        runs-on: ubuntu-latest
+        steps:
+        - name: Checkout
+          uses: actions/checkout@v3
+        - name: Get short commit hash
+          id: commit_hash
+          run: echo "short_hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        - name: Install .NET
+          uses: actions/setup-dotnet@v3
+          with:
+            dotnet-version: 7.0.x
+        - name: Publish the application
+          run: dotnet publish src -c Release -r ${{ matrix.rid }} -p:VersionSuffix=${{ steps.commit_hash.outputs.short_hash }} -o publish/${{ matrix.rid }}
+        - name: Create .zip files for the published folders
+          uses: montudor/action-zip@v1
+          with:
+            args: zip -r publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}.zip publish/${{ matrix.rid }}
+        - name: Publish artifacts
+          uses: actions/upload-artifact@v3
+          with:
+            name: TeamBuilder
+            path: publish/*.zip
