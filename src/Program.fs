@@ -1,11 +1,11 @@
 ﻿open System
 open System.IO
 open System.Text
-open Argu
 open ExcelDataReader
 open Flips
 open Flips.SliceMap
 open Flips.Types
+open FSharp.SystemCommandLine
 
 type Student = Student of string
     with member this.Name = match this with Student name -> name
@@ -34,12 +34,6 @@ module TeamBuilder =
           MaxTeamSize: int
           MinimizeTeamCount: bool
           SolverSettings: SolverSettings }
-
-        static member Default =
-            { MinTeamSize = 3
-              MaxTeamSize = 6
-              MinimizeTeamCount = false
-              SolverSettings = Settings.basic }
 
     let private getProjects (preferences: Preferences) = 
         preferences 
@@ -207,46 +201,52 @@ module TeamBuilder =
         let allAssignments = getAllAssignments projects
         buildTeams' 0 settings preferences students projects allAssignments
 
-type Args =
-    | [<MainCommand; ExactlyOnce>] Preferences_File of path: string
-    | No_Header
-    | Name_Column of int
-    | Pref_Start_Column of int
-    | Min_Team_Size of int
-    | Max_Team_Size of int
-    | Minimize_Team_Count
-    | Solve_Timeout of int64
+module Params =
+    let preferencesFile = Input.Argument<FileInfo>(
+        "preferences file",
+        "Path to an Excel or CSV file containing student preferences" )
+    let noHeader = Input.Option<bool>(
+        [ "--no-header" ],
+        false,
+        "The preferences file does not contain a header row" )
+    let nameColumn = Input.Option<int>(
+        [ "--name-column" ],
+        4,
+        "Index of the column in the preferences file where the student's name is recorded" )
+    let prefStartColumn = Input.Option<int>(
+        [ "--pref-start-column" ],
+        5,
+        "Index of the column in the preferences file where the columns containing preferences start" )
+    let minTeamSize = Input.Option<int>(
+        [ "--min-team-size" ],
+        4,
+        "Minimum size of a team" )
+    let maxTeamSize = Input.Option<int>(
+        [ "--max-team-size" ],
+        6,
+        "Maximum size of a team" )
+    let minimizeTeamCount = Input.Option<bool>(
+        [ "--minimize-team-count" ],
+        false,
+        "Minimize the number of teams (after optimizing students' preferences)" )
+    let solveTimeout = Input.Option<int64>(
+        [ "--solve-timeout" ],
+        10_000L,
+        "Maximum duration for running the solver in each round (in ms)" )
 
-    interface IArgParserTemplate with
-        member this.Usage =
-            match this with
-            | Preferences_File _ -> "Path to an Excel file containing student preferences"
-            | No_Header -> "Indicate that the Excel file doet not contain a header row"
-            | Name_Column _ -> "Index of the column in the Excel file where the student's name is recorded"
-            | Pref_Start_Column _ -> "Index of the column in the Excel file where the columns containing preferences start"
-            | Min_Team_Size _ -> "Minimum size of a team"
-            | Max_Team_Size _ -> "Maximum size of a team"
-            | Minimize_Team_Count -> "Minimize the number of teams (after optimizing students' preferences)"
-            | Solve_Timeout _ -> "Maximum duration for running the solver in each round (in ms)"
-
-[<EntryPoint>]
-let main args =
-    let errorHandler = ProcessExiter(colorizer = function ErrorCode.HelpText -> None | _ -> Some ConsoleColor.Red)
-    let argParser = ArgumentParser.Create<Args>(errorHandler = errorHandler)
-    let args = argParser.ParseCommandLine(inputs = args, raiseOnUsage = true)
-
+let run (ctx: CommandLine.Invocation.InvocationContext) =
     try
-        let filePath = args.GetResult <@ Preferences_File @>
-        let noHeader = args.Contains <@ No_Header @>
-        let nameColumn = args.TryGetResult <@ Name_Column @> |> Option.defaultValue 4
-        let prefStartColumn = args.TryGetResult <@ Pref_Start_Column @> |> Option.defaultValue 5
+        let file = Params.preferencesFile.GetValue ctx
+        let noHeader = Params.noHeader.GetValue ctx
+        let nameColumn = Params.nameColumn.GetValue ctx
+        let prefStartColumn = Params.prefStartColumn.GetValue ctx
 
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)
-        use file = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+        use fileStream = file.Open(FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
         use fileReader = 
-            if filePath.EndsWith ".csv"
-            then ExcelReaderFactory.CreateCsvReader(file)
-            else ExcelReaderFactory.CreateReader(file)
+            if file.Extension = ".csv"
+            then ExcelReaderFactory.CreateCsvReader(fileStream)
+            else ExcelReaderFactory.CreateReader(fileStream)
 
         let fileDataSet = fileReader.AsDataSet(
             ExcelDataSetConfiguration
@@ -283,20 +283,15 @@ let main args =
             |> Map.ofList
 
         let settings =
-            TeamBuilder.Settings.Default
-            |> match args.TryGetResult <@ Min_Team_Size @> with
-               | Some minTeamSize -> fun settings -> { settings with MinTeamSize = minTeamSize }
-               | None -> id
-            |> match args.TryGetResult <@ Max_Team_Size @> with
-               | Some maxTeamSize -> fun settings -> { settings with MaxTeamSize = maxTeamSize }
-               | None -> id
-            |> if args.Contains <@ Minimize_Team_Count @>
-               then fun settings -> { settings with MinimizeTeamCount = true }
-               else id
-            |> match args.TryGetResult <@ Solve_Timeout @> with
-               | Some solveTimeout -> fun settings -> { settings with SolverSettings = { settings.SolverSettings with MaxDuration = solveTimeout } }
-               | None -> id
-
+            { TeamBuilder.Settings.MinTeamSize = 
+                Params.minTeamSize.GetValue ctx
+              TeamBuilder.Settings.MaxTeamSize = 
+                Params.maxTeamSize.GetValue ctx
+              TeamBuilder.Settings.MinimizeTeamCount = 
+                Params.minimizeTeamCount.GetValue ctx
+              TeamBuilder.Settings.SolverSettings = 
+                { Settings.basic with MaxDuration = Params.solveTimeout.GetValue ctx } }
+        
         match TeamBuilder.buildTeams settings preferences with
         | Ok result ->
             let nthPreferences =
@@ -333,3 +328,20 @@ let main args =
     with e ->
         printfn "%s" e.Message
         1
+
+[<EntryPoint>]
+let main args =
+    rootCommand args {
+        description "Create teams based on students' preferred roles and projects"
+        inputs (Input.Context())
+        setHandler run
+        addInputs 
+            [ Params.preferencesFile
+              Params.noHeader
+              Params.nameColumn
+              Params.prefStartColumn
+              Params.minTeamSize
+              Params.maxTeamSize
+              Params.minimizeTeamCount
+              Params.solveTimeout ]
+    }
