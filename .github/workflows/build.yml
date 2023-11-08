@@ -20,13 +20,9 @@ jobs:
           with:
             dotnet-version: 7.0.x
         - name: Publish the application
-          run: dotnet publish src -c Release -r ${{ matrix.rid }} -p:VersionSuffix=${{ steps.commit_hash.outputs.short_hash }} -o publish/${{ matrix.rid }}
-        - name: Create .zip files for the published folders
-          uses: montudor/action-zip@v1
-          with:
-            args: zip -r publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}.zip publish/${{ matrix.rid }}
+          run: dotnet publish src -c Release -r ${{ matrix.rid }} -p:VersionSuffix=${{ steps.commit_hash.outputs.short_hash }} -o publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}
         - name: Publish artifacts
           uses: actions/upload-artifact@v3
           with:
-            name: TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}.zip
-            path: publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}.zip
+            name: TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}
+            path: publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}/
