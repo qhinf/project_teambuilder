@@ -28,5 +28,5 @@ jobs:
         - name: Publish artifacts
           uses: actions/upload-artifact@v3
           with:
-            name: TeamBuilder
-            path: publish/*.zip
+            name: TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}.zip
+            path: publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}.zip
