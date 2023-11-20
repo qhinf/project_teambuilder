@@ -17,6 +17,7 @@
     <PackageReference Include="ExcelDataReader.DataSet" Version="3.6.0" />
     <PackageReference Include="Flips" Version="2.4.9" />
     <PackageReference Include="FSharp.SystemCommandLine" Version="0.17.0-beta4" />
+    <PackageReference Include="Google.OrTools" Version="9.8.3296" />
     <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="7.0.0" />
   </ItemGroup>
