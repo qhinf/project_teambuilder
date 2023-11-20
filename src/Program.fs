@@ -329,7 +329,8 @@ let run (ctx: CommandLine.Invocation.InvocationContext) =
                 printfn $"- %s{project.Name}"
                 for assignment, student in assignments |> List.sort do
                     let nthPref = nthPreferences[student]
-                    printfn $"  - %O{assignment.Role}: %s{student.Name} (Pref: %d{nthPref})"
+                    let prefCount = List.length preferences[student]
+                    printfn $"  - %O{assignment.Role}: %s{student.Name} (Pref: %d{nthPref}/%d{prefCount})"
             ) 
 
             0
