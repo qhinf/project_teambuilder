@@ -11,18 +11,18 @@ jobs:
         runs-on: ubuntu-latest
         steps:
         - name: Checkout
-          uses: actions/checkout@v3
+          uses: actions/checkout@v5
         - name: Get short commit hash
           id: commit_hash
           run: echo "short_hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
         - name: Install .NET
-          uses: actions/setup-dotnet@v3
+          uses: actions/setup-dotnet@v5
           with:
-            dotnet-version: 8.0.x
+            dotnet-version: 9.0.x
         - name: Publish the application
           run: dotnet publish src -c Release -r ${{ matrix.rid }} -p:VersionSuffix=${{ steps.commit_hash.outputs.short_hash }} -o publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}
         - name: Publish artifacts
-          uses: actions/upload-artifact@v3
+          uses: actions/upload-artifact@v5
           with:
             name: TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}
             path: publish/TeamBuilder_${{ steps.commit_hash.outputs.short_hash }}_${{ matrix.rid }}/
